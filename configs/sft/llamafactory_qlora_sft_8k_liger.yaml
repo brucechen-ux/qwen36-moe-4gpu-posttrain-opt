@@ -1,0 +1,56 @@
+### LLaMA-Factory QLoRA SFT template for 4x H800 with Liger Kernel.
+### Verify field names against the installed LLaMA-Factory version before launch.
+
+model_name_or_path: ./models/Qwen3.6-35B-A3B # Use a local snapshot path; do not rely on auto-download.
+trust_remote_code: true
+
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 64
+lora_alpha: 128
+lora_dropout: 0.05
+lora_target: all
+
+quantization_bit: 4
+quantization_method: bitsandbytes
+bnb_4bit_compute_dtype: bfloat16
+bnb_4bit_quant_type: nf4
+bnb_4bit_use_double_quant: true
+
+dataset_dir: data
+dataset: code_sft_sample # TODO: replace with the dataset name registered in LLaMA-Factory.
+template: qwen # TODO: verify the correct chat template for Qwen3.6.
+cutoff_len: 8192
+packing: true
+preprocessing_num_workers: 8
+
+output_dir: outputs/sft/qwen3_6_35b_a3b_qlora_8k_liger
+overwrite_output_dir: false
+save_strategy: steps
+save_steps: 200
+save_total_limit: 3
+logging_steps: 5
+plot_loss: true
+report_to: tensorboard
+
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 32
+learning_rate: 2.0e-4
+num_train_epochs: 1.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+weight_decay: 0.0
+max_grad_norm: 1.0
+
+bf16: true
+fp16: false
+gradient_checkpointing: true
+ddp_timeout: 180000000
+deepspeed: configs/sft/deepspeed_zero2_4gpu.json
+flash_attn: fa2 # TODO: verify value supported by the installed framework.
+optim: paged_adamw_32bit
+
+enable_liger_kernel: true # TODO: confirm this field name for the installed LLaMA-Factory release.
+
+seed: 42

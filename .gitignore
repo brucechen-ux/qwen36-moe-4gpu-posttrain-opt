@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Models and checkpoints
+models/
+checkpoints/
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+
+# Training outputs
+outputs/
+runs/
+wandb/
+tensorboard/
+lightning_logs/
+
+# Large experiment results
+results/**/*.jsonl
+results/**/*.csv
+results/**/*.log
+results/**/*.trace
+results/**/*.nsys-rep
+results/**/*.qdrep
+results/**/*.sqlite
+
+# Keep result directories
+!results/**/.gitkeep
+
+# Logs
+*.log
+logs/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Temporary files
+tmp/
+temp/
+.cache/
