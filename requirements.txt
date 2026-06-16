@@ -1,0 +1,19 @@
+# Generic Python dependencies for local utilities and post-training orchestration.
+# Install PyTorch/CUDA, vLLM, SGLang, and LLaMA-Factory separately for the target H800 environment.
+accelerate
+bitsandbytes
+datasets
+jsonlines
+numpy
+pandas
+peft
+protobuf
+pyyaml
+requests
+rich
+safetensors
+sentencepiece
+tensorboard
+tqdm
+transformers
+trl
