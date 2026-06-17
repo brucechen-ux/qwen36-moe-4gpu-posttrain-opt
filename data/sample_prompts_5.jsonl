@@ -1,0 +1,5 @@
+{"id":"p001","prompt":"Write a Python function to reverse a linked list."}
+{"id":"p002","prompt":"Explain the difference between prefill and decode in LLM inference."}
+{"id":"p003","prompt":"Given a list of integers, write a function to return the top k frequent elements."}
+{"id":"p004","prompt":"What is gradient checkpointing and why does it reduce memory usage?"}
+{"id":"p005","prompt":"Write a unit test for a function that parses JSON lines."}

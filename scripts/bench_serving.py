@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=0, help="Maximum prompts to send. 0 means all.")
     parser.add_argument("--sleep", type=float, default=0.0, help="Sleep seconds between requests.")
     parser.add_argument("--no-stream", action="store_true", help="Disable streaming. TTFT will equal total latency.")
+    parser.add_argument("--disable-thinking", action="store_true", help="Pass chat_template_kwargs.enable_thinking=false for Qwen-style thinking models.")
     parser.add_argument(
         "--estimate-output-tokens",
         choices=("none", "whitespace", "chars"),
@@ -100,6 +101,8 @@ def make_payload(args: argparse.Namespace, messages: List[Dict[str, str]]) -> Di
     }
     if not args.no_stream:
         payload["stream_options"] = {"include_usage": True}
+    if args.disable_thinking:
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
     return payload
 
 
