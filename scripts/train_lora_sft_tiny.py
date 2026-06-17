@@ -284,21 +284,29 @@ def main():
             torch.cuda.synchronize()
             step_time = time.time() - step_start
 
-            loss_value = float(loss.detach().cpu())
-            losses.append(loss_value)
+            log_loss = loss.detach()
+            if distributed:
+                log_loss = log_loss.clone()
+                dist.all_reduce(log_loss, op=dist.ReduceOp.SUM)
+                log_loss = log_loss / world_size
 
-            print(
-                json.dumps(
-                    {
-                        "step": step,
-                        "loss": loss_value,
-                        "step_time_s": round(step_time, 4),
-                        "max_memory_gib": round(torch.cuda.max_memory_allocated() / 1024**3, 2),
-                    },
-                    ensure_ascii=False,
+            loss_value = float(log_loss.cpu())
+
+            if is_main:
+                losses.append(loss_value)
+                print(
+                    json.dumps(
+                        {
+                            "step": step,
+                            "avg_loss" if distributed else "loss": loss_value,
+                            "rank0_step_time_s": round(step_time, 4),
+                            "rank0_max_memory_gib": round(torch.cuda.max_memory_allocated() / 1024**3, 2),
+                            "world_size": world_size,
+                        },
+                        ensure_ascii=False,
+                    )
                 )
-            )
-            print_gpu_memory(f"after step {step}")
+                print_gpu_memory(f"after step {step}")
 
             step += 1
 
@@ -309,6 +317,9 @@ def main():
         "max_length": args.max_length,
         "max_steps": args.max_steps,
         "lora_rank": args.lora_rank,
+        "distributed": distributed,
+        "world_size": world_size,
+        "loss_label": "avg_loss_across_ranks" if distributed else "loss",
         "losses": losses,
         "total_time_s": total_time,
     }
