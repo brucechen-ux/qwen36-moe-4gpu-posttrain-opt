@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from typing import List, Dict
 
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset, DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import LoraConfig, get_peft_model
 
@@ -144,11 +147,32 @@ def main():
     parser.add_argument("--lora-rank", type=int, default=4)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--save-adapter", action="store_true")
+    parser.add_argument("--distributed", action="store_true")
     args = parser.parse_args()
 
-    os.makedirs(args.output_dir, exist_ok=True)
+    distributed = args.distributed or int(os.environ.get("WORLD_SIZE", "1")) > 1
+    if distributed:
+        local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        torch.cuda.set_device(local_rank)
+        dist.init_process_group(backend="nccl")
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+        args.device = f"cuda:{local_rank}"
+    else:
+        local_rank = 0
+        rank = 0
+        world_size = 1
+
+    is_main = rank == 0
+
+    if is_main:
+        os.makedirs(args.output_dir, exist_ok=True)
+
+    if distributed:
+        dist.barrier()
 
     print("torch:", torch.__version__)
+    print("rank:", rank, "local_rank:", local_rank, "world_size:", world_size)
     print("torch cuda:", torch.version.cuda)
     print("cuda available:", torch.cuda.is_available())
     if torch.cuda.is_available():
@@ -196,17 +220,38 @@ def main():
     )
 
     model = get_peft_model(model, lora_config)
-    model.print_trainable_parameters()
+    if is_main:
+        model.print_trainable_parameters()
     model.train()
+
+    if distributed:
+        model = DDP(
+            model,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            find_unused_parameters=False,
+        )
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr)
 
     dataset = TinySFTDataset(tokenizer, max_length=args.max_length)
+
+    sampler = None
+    if distributed:
+        sampler = DistributedSampler(
+            dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=False,
+            drop_last=False,
+        )
+
     loader = DataLoader(
         dataset,
         batch_size=1,
-        shuffle=False,
+        shuffle=False if sampler is not None else False,
+        sampler=sampler,
         collate_fn=Collator(tokenizer),
     )
 
@@ -268,18 +313,27 @@ def main():
         "total_time_s": total_time,
     }
 
-    summary_path = os.path.join(args.output_dir, "tiny_lora_sft_summary.json")
-    with open(summary_path, "w") as f:
-        json.dump(summary, f, indent=2)
+    if distributed:
+        dist.barrier()
 
-    print("saved summary:", summary_path)
-    print(json.dumps(summary, indent=2))
+    if is_main:
+        summary_path = os.path.join(args.output_dir, "tiny_lora_sft_summary.json")
+        with open(summary_path, "w") as f:
+            json.dump(summary, f, indent=2)
 
-    if args.save_adapter:
-        adapter_dir = os.path.join(args.output_dir, "adapter")
-        model.save_pretrained(adapter_dir)
-        tokenizer.save_pretrained(adapter_dir)
-        print("saved adapter:", adapter_dir)
+        print("saved summary:", summary_path)
+        print(json.dumps(summary, indent=2))
+
+        if args.save_adapter:
+            adapter_dir = os.path.join(args.output_dir, "adapter")
+            save_model = model.module if distributed else model
+            save_model.save_pretrained(adapter_dir)
+            tokenizer.save_pretrained(adapter_dir)
+            print("saved adapter:", adapter_dir)
+
+    if distributed:
+        dist.barrier()
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
