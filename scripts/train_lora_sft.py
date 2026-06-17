@@ -146,6 +146,76 @@ class JsonlSFTDataset(Dataset):
 
 
 @dataclass
+
+
+class PackedJsonlSFTDataset(Dataset):
+    def __init__(self, tokenizer, data_path: str, max_length: int):
+        self.examples = []
+        eos = tokenizer.eos_token or ""
+
+        with open(data_path, "r", encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+
+        cur_ids = []
+        cur_labels = []
+
+        def flush():
+            nonlocal cur_ids, cur_labels
+            if cur_ids:
+                self.examples.append(
+                    {
+                        "input_ids": cur_ids,
+                        "attention_mask": [1] * len(cur_ids),
+                        "labels": cur_labels,
+                    }
+                )
+                cur_ids = []
+                cur_labels = []
+
+        for row in rows:
+            instruction = row.get("instruction") or row.get("prompt") or ""
+            query = row.get("input") or row.get("query") or ""
+            output = row.get("output") or row.get("response") or ""
+
+            user_text = instruction if not query else instruction + "\n\n" + query
+            prompt_ids = build_prompt_ids(tokenizer, user_text)
+            answer_ids = tokenizer(output + eos, add_special_tokens=False)["input_ids"]
+
+            sample_ids = prompt_ids + answer_ids
+            sample_labels = [-100] * len(prompt_ids) + answer_ids
+
+            if len(sample_ids) > max_length:
+                sample_ids = sample_ids[:max_length]
+                sample_labels = sample_labels[:max_length]
+
+            if cur_ids and len(cur_ids) + len(sample_ids) > max_length:
+                flush()
+
+            if len(sample_ids) == max_length:
+                self.examples.append(
+                    {
+                        "input_ids": sample_ids,
+                        "attention_mask": [1] * len(sample_ids),
+                        "labels": sample_labels,
+                    }
+                )
+            else:
+                cur_ids.extend(sample_ids)
+                cur_labels.extend(sample_labels)
+
+        flush()
+
+        if not self.examples:
+            raise ValueError(f"No packed examples loaded from {data_path}")
+
+    def __len__(self):
+        return len(self.examples)
+
+    def __getitem__(self, idx):
+        return self.examples[idx]
+
+
+@dataclass
 class Collator:
     tokenizer: object
 
@@ -185,6 +255,7 @@ def main():
     parser.add_argument("--output-dir", default="outputs/sft/qwen36_lora_tiny_smoke")
     parser.add_argument("--data-path", default="data/agentic_coding_sft_sample.jsonl")
     parser.add_argument("--dataset-mode", choices=["tiny", "jsonl"], default="jsonl")
+    parser.add_argument("--packing", action="store_true")
     parser.add_argument("--max-length", type=int, default=512)
     parser.add_argument("--per-device-batch-size", type=int, default=1)
     parser.add_argument("--grad-accum-steps", type=int, default=1)
@@ -291,7 +362,10 @@ def main():
     if args.dataset_mode == "tiny":
         dataset = TinySFTDataset(tokenizer, max_length=args.max_length)
     else:
-        dataset = JsonlSFTDataset(tokenizer, args.data_path, max_length=args.max_length)
+        if args.packing:
+            dataset = PackedJsonlSFTDataset(tokenizer, args.data_path, max_length=args.max_length)
+        else:
+            dataset = JsonlSFTDataset(tokenizer, args.data_path, max_length=args.max_length)
 
     sampler = None
     if distributed:
@@ -372,6 +446,8 @@ def main():
         loss_value = accum_loss / args.grad_accum_steps
         tokens_per_second = accum_tokens / step_time
         samples_per_second = accum_samples / step_time
+        theoretical_max_tokens = args.max_length * args.per_device_batch_size * args.grad_accum_steps * world_size
+        token_utilization = accum_tokens / theoretical_max_tokens
         peak_memory = torch.cuda.max_memory_allocated() / 1024**3
 
         if is_main:
@@ -381,6 +457,8 @@ def main():
                 "avg_loss" if distributed else "loss": loss_value,
                 "rank0_step_time_s": round(step_time, 4),
                 "global_tokens_per_step": accum_tokens,
+                "theoretical_max_tokens_per_update": theoretical_max_tokens,
+                "token_utilization": round(token_utilization, 4),
                 "global_samples_per_step": accum_samples,
                 "tokens_per_second": round(tokens_per_second, 2),
                 "samples_per_second": round(samples_per_second, 4),
@@ -401,10 +479,12 @@ def main():
         "max_length": args.max_length,
         "dataset_mode": args.dataset_mode,
         "data_path": args.data_path,
+        "packing": args.packing,
         "max_steps": args.max_steps,
         "per_device_batch_size": args.per_device_batch_size,
         "grad_accum_steps": args.grad_accum_steps,
         "global_batch_size_per_update": args.per_device_batch_size * args.grad_accum_steps * world_size,
+        "theoretical_max_tokens_per_update": args.max_length * args.per_device_batch_size * args.grad_accum_steps * world_size,
         "lora_rank": args.lora_rank,
         "distributed": distributed,
         "world_size": world_size,
