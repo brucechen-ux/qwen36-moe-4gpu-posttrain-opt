@@ -143,6 +143,7 @@ def main():
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--lora-rank", type=int, default=4)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--save-adapter", action="store_true")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -273,6 +274,12 @@ def main():
 
     print("saved summary:", summary_path)
     print(json.dumps(summary, indent=2))
+
+    if args.save_adapter:
+        adapter_dir = os.path.join(args.output_dir, "adapter")
+        model.save_pretrained(adapter_dir)
+        tokenizer.save_pretrained(adapter_dir)
+        print("saved adapter:", adapter_dir)
 
 
 if __name__ == "__main__":
