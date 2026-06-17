@@ -33,14 +33,6 @@
 - Peak rank0 memory increased from about 65.00 GiB to 68.10 GiB.
 - Peak memory increased by about 3.10 GiB.
 
-## Packing Run Metrics
-
-- step 0: 16156 tokens, 98.61% utilization, 1324.09 tokens/s, 68.08 GiB
-- step 1: 16156 tokens, 98.61% utilization, 2089.59 tokens/s, 68.10 GiB
-- step 2: 16156 tokens, 98.61% utilization, 2094.40 tokens/s, 68.10 GiB
-- step 3: 16156 tokens, 98.61% utilization, 2092.23 tokens/s, 68.10 GiB
-- step 4: 16156 tokens, 98.61% utilization, 2098.86 tokens/s, 68.10 GiB
-
 ## Notes
 
 The no-packing baseline wastes most of the sequence capacity because the examples are short. Although max_length is 1024, the actual global tokens per update are only about 1258 out of 16384 possible tokens.
