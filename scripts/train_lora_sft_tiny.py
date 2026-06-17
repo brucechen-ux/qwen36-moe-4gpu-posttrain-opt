@@ -148,6 +148,7 @@ def main():
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--save-adapter", action="store_true")
     parser.add_argument("--distributed", action="store_true")
+    parser.add_argument("--no-gradient-checkpointing", action="store_true")
     args = parser.parse_args()
 
     distributed = args.distributed or int(os.environ.get("WORLD_SIZE", "1")) > 1
@@ -198,8 +199,14 @@ def main():
     )
 
     model.config.use_cache = False
-    if hasattr(model, "gradient_checkpointing_enable"):
-        model.gradient_checkpointing_enable()
+    if args.no_gradient_checkpointing:
+        if is_main:
+            print("gradient checkpointing: disabled")
+    else:
+        if hasattr(model, "gradient_checkpointing_enable"):
+            model.gradient_checkpointing_enable()
+        if is_main:
+            print("gradient checkpointing: enabled")
 
     print_gpu_memory("after base model load")
 
@@ -320,6 +327,7 @@ def main():
         "distributed": distributed,
         "world_size": world_size,
         "loss_label": "avg_loss_across_ranks" if distributed else "loss",
+        "gradient_checkpointing": not args.no_gradient_checkpointing,
         "losses": losses,
         "total_time_s": total_time,
     }
