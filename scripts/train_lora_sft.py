@@ -86,6 +86,12 @@ class TinySFTDataset(Dataset):
 
             input_ids = input_ids[:max_length]
             labels = labels[:max_length]
+
+            # Skip examples where truncation removes the entire supervised answer.
+            # Otherwise CrossEntropyLoss over all ignore_index labels can produce NaN loss.
+            if not any(label != -100 for label in labels):
+                continue
+
             attention_mask = [1] * len(input_ids)
 
             self.examples.append(
@@ -125,6 +131,12 @@ class JsonlSFTDataset(Dataset):
 
             input_ids = input_ids[:max_length]
             labels = labels[:max_length]
+
+            # Skip examples where truncation removes the entire supervised answer.
+            # Otherwise CrossEntropyLoss over all ignore_index labels can produce NaN loss.
+            if not any(label != -100 for label in labels):
+                continue
+
             attention_mask = [1] * len(input_ids)
 
             self.examples.append(
@@ -161,7 +173,7 @@ class PackedJsonlSFTDataset(Dataset):
 
         def flush():
             nonlocal cur_ids, cur_labels
-            if cur_ids:
+            if cur_ids and any(label != -100 for label in cur_labels):
                 self.examples.append(
                     {
                         "input_ids": cur_ids,
@@ -169,8 +181,8 @@ class PackedJsonlSFTDataset(Dataset):
                         "labels": cur_labels,
                     }
                 )
-                cur_ids = []
-                cur_labels = []
+            cur_ids = []
+            cur_labels = []
 
         for row in rows:
             instruction = row.get("instruction") or row.get("prompt") or ""
@@ -187,6 +199,11 @@ class PackedJsonlSFTDataset(Dataset):
             if len(sample_ids) > max_length:
                 sample_ids = sample_ids[:max_length]
                 sample_labels = sample_labels[:max_length]
+
+            # Skip examples where truncation removes the entire supervised answer.
+            # Otherwise CrossEntropyLoss over all ignore_index labels can produce NaN loss.
+            if not any(label != -100 for label in sample_labels):
+                continue
 
             if cur_ids and len(cur_ids) + len(sample_ids) > max_length:
                 flush()
