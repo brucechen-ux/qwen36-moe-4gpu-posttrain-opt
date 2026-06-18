@@ -232,6 +232,104 @@ class PackedJsonlSFTDataset(Dataset):
         return self.examples[idx]
 
 
+class LengthAwarePackedJsonlSFTDataset(Dataset):
+    def __init__(self, tokenizer, data_path: str, max_length: int):
+        self.examples = []
+        eos = tokenizer.eos_token or ""
+
+        with open(data_path, "r", encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+
+        samples = []
+        for row in rows:
+            instruction = row.get("instruction") or row.get("prompt") or ""
+            query = row.get("input") or row.get("query") or ""
+            output = row.get("output") or row.get("response") or ""
+
+            user_text = instruction if not query else instruction + "\n\n" + query
+            prompt_ids = build_prompt_ids(tokenizer, user_text)
+            answer_ids = tokenizer(output + eos, add_special_tokens=False)["input_ids"]
+
+            sample_ids = prompt_ids + answer_ids
+            sample_labels = [-100] * len(prompt_ids) + answer_ids
+
+            if len(sample_ids) > max_length:
+                sample_ids = sample_ids[:max_length]
+                sample_labels = sample_labels[:max_length]
+
+            # Skip examples where truncation removes the entire supervised answer.
+            # Otherwise CrossEntropyLoss over all ignore_index labels can produce NaN loss.
+            if not any(label != -100 for label in sample_labels):
+                continue
+
+            samples.append(
+                {
+                    "input_ids": sample_ids,
+                    "labels": sample_labels,
+                    "length": len(sample_ids),
+                }
+            )
+
+        # Length-aware packing improves token utilization for real code SFT workloads
+        # by placing longer samples first and filling each bin as tightly as possible.
+        samples.sort(key=lambda sample: sample["length"], reverse=True)
+        bins = []
+
+        for sample in samples:
+            sample_len = sample["length"]
+            best_idx = None
+            best_remaining_after = None
+
+            for idx, bin_ in enumerate(bins):
+                if sample_len <= bin_["remaining"]:
+                    remaining_after = bin_["remaining"] - sample_len
+                    if best_remaining_after is None or remaining_after < best_remaining_after:
+                        best_idx = idx
+                        best_remaining_after = remaining_after
+
+            if best_idx is None:
+                bins.append(
+                    {
+                        "input_ids": list(sample["input_ids"]),
+                        "labels": list(sample["labels"]),
+                        "remaining": max_length - sample_len,
+                    }
+                )
+            else:
+                bins[best_idx]["input_ids"].extend(sample["input_ids"])
+                bins[best_idx]["labels"].extend(sample["labels"])
+                bins[best_idx]["remaining"] -= sample_len
+
+        for bin_ in bins:
+            input_ids = bin_["input_ids"]
+            labels = bin_["labels"]
+            attention_mask = [1] * len(input_ids)
+
+            if len(input_ids) > max_length:
+                raise ValueError("length-aware packed example exceeds max_length")
+            if len(input_ids) != len(attention_mask) or len(input_ids) != len(labels):
+                raise ValueError("length-aware packed example has inconsistent tensor lengths")
+            if not any(label != -100 for label in labels):
+                raise ValueError("length-aware packed example has no supervised labels")
+
+            self.examples.append(
+                {
+                    "input_ids": input_ids,
+                    "attention_mask": attention_mask,
+                    "labels": labels,
+                }
+            )
+
+        if not self.examples:
+            raise ValueError(f"No length-aware packed examples loaded from {data_path}")
+
+    def __len__(self):
+        return len(self.examples)
+
+    def __getitem__(self, idx):
+        return self.examples[idx]
+
+
 @dataclass
 class Collator:
     tokenizer: object
@@ -273,6 +371,7 @@ def main():
     parser.add_argument("--data-path", default="data/agentic_coding_sft_sample.jsonl")
     parser.add_argument("--dataset-mode", choices=["tiny", "jsonl"], default="jsonl")
     parser.add_argument("--packing", action="store_true")
+    parser.add_argument("--packing-strategy", choices=["greedy", "length_aware"], default="greedy")
     parser.add_argument("--max-length", type=int, default=512)
     parser.add_argument("--per-device-batch-size", type=int, default=1)
     parser.add_argument("--grad-accum-steps", type=int, default=1)
@@ -379,8 +478,10 @@ def main():
     if args.dataset_mode == "tiny":
         dataset = TinySFTDataset(tokenizer, max_length=args.max_length)
     else:
-        if args.packing:
+        if args.packing and args.packing_strategy == "greedy":
             dataset = PackedJsonlSFTDataset(tokenizer, args.data_path, max_length=args.max_length)
+        elif args.packing and args.packing_strategy == "length_aware":
+            dataset = LengthAwarePackedJsonlSFTDataset(tokenizer, args.data_path, max_length=args.max_length)
         else:
             dataset = JsonlSFTDataset(tokenizer, args.data_path, max_length=args.max_length)
 
@@ -497,6 +598,7 @@ def main():
         "dataset_mode": args.dataset_mode,
         "data_path": args.data_path,
         "packing": args.packing,
+        "packing_strategy": args.packing_strategy,
         "max_steps": args.max_steps,
         "per_device_batch_size": args.per_device_batch_size,
         "grad_accum_steps": args.grad_accum_steps,
