@@ -61,35 +61,60 @@ def setup_distributed():
     return rank, local_rank, world_size, device
 
 
-def resolve_transformer_layer_classes(model, class_names):
-    requested = {name.strip() for name in class_names.split(",") if name.strip()}
-    matched = set()
-    for module in model.modules():
-        if module.__class__.__name__ in requested:
-            matched.add(module.__class__)
-    return matched
+def count_parameters_by_dtype(model, trainable_only=False):
+    dtype_counts = {}
+    for param in model.parameters():
+        if trainable_only and not param.requires_grad:
+            continue
+        key = str(param.dtype)
+        if key not in dtype_counts:
+            dtype_counts[key] = {"num_tensors": 0, "num_params": 0}
+        dtype_counts[key]["num_tensors"] += 1
+        dtype_counts[key]["num_params"] += param.numel()
+    return dtype_counts
 
 
-def build_auto_wrap_policy(model, args, is_main):
+def print_dtype_debug(model, label, is_main, trainable_only=False):
+    if not is_main:
+        return
+    counts = count_parameters_by_dtype(model, trainable_only=trainable_only)
+    print(f"{label}:", json.dumps(counts, sort_keys=True))
+
+
+def load_qwen3_5_moe_decoder_layer(is_main):
+    try:
+        from transformers.models.qwen3_5_moe.modeling_qwen3_5_moe import Qwen3_5MoeDecoderLayer
+    except Exception as exc:
+        if is_main:
+            print(
+                "warning: failed to import Qwen3_5MoeDecoderLayer from "
+                "transformers.models.qwen3_5_moe.modeling_qwen3_5_moe; "
+                f"falling back to size-based auto wrap: {exc}"
+            )
+        return None
+
+    if is_main:
+        print(
+            "fsdp transformer auto wrap layer class: "
+            f"{Qwen3_5MoeDecoderLayer.__module__}.{Qwen3_5MoeDecoderLayer.__name__}"
+        )
+    return Qwen3_5MoeDecoderLayer
+
+
+def build_auto_wrap_policy(args, is_main):
     if args.fsdp_auto_wrap_policy == "none":
         return None
 
     if args.fsdp_auto_wrap_policy == "size":
-        return partial(size_based_auto_wrap_policy, min_num_params=args.fsdp_min_num_params)
-
-    transformer_classes = resolve_transformer_layer_classes(model, args.fsdp_transformer_layer_classes)
-    if not transformer_classes:
         if is_main:
-            print(
-                "warning: no transformer layer class matched "
-                f"{args.fsdp_transformer_layer_classes!r}; falling back to size-based auto wrap"
-            )
+            print(f"fsdp size-based auto wrap min_num_params={args.fsdp_min_num_params}")
         return partial(size_based_auto_wrap_policy, min_num_params=args.fsdp_min_num_params)
 
-    if is_main:
-        names = sorted(cls.__name__ for cls in transformer_classes)
-        print("fsdp transformer auto wrap classes:", names)
-    return partial(transformer_auto_wrap_policy, transformer_layer_cls=transformer_classes)
+    decoder_layer_cls = load_qwen3_5_moe_decoder_layer(is_main)
+    if decoder_layer_cls is None:
+        return partial(size_based_auto_wrap_policy, min_num_params=args.fsdp_min_num_params)
+
+    return partial(transformer_auto_wrap_policy, transformer_layer_cls={decoder_layer_cls})
 
 
 def build_dataset(args, tokenizer):
@@ -139,10 +164,6 @@ def parse_args():
     parser.add_argument("--fsdp-sharding-strategy", choices=sorted(SHARDING_STRATEGIES), default="full_shard")
     parser.add_argument("--fsdp-auto-wrap-policy", choices=["transformer", "size", "none"], default="transformer")
     parser.add_argument("--fsdp-min-num-params", type=int, default=100_000_000)
-    parser.add_argument(
-        "--fsdp-transformer-layer-classes",
-        default="Qwen3MoeDecoderLayer,Qwen3DecoderLayer,Qwen2MoeDecoderLayer,Qwen2DecoderLayer,DecoderLayer",
-    )
     return parser.parse_args()
 
 
@@ -208,8 +229,15 @@ def main():
     model = get_peft_model(model, lora_config)
     if is_main:
         model.print_trainable_parameters()
+    print_dtype_debug(model, "after LoRA injection", is_main)
 
-    auto_wrap_policy = build_auto_wrap_policy(model, args, is_main)
+    # PEFT LoRA parameters may be initialized as fp32 while the base model is bf16.
+    # Cast before FSDP flattening so each wrapped unit has a uniform parameter dtype.
+    model.to(dtype=torch.bfloat16)
+    print_dtype_debug(model, "after model.to(bfloat16)", is_main)
+    print_dtype_debug(model, "trainable parameter dtype distribution", is_main, trainable_only=True)
+
+    auto_wrap_policy = build_auto_wrap_policy(args, is_main)
     mixed_precision = None
     if torch.cuda.is_available():
         mixed_precision = MixedPrecision(
@@ -360,7 +388,6 @@ def main():
         "gradient_checkpointing": not args.no_gradient_checkpointing,
         "fsdp_sharding_strategy": args.fsdp_sharding_strategy,
         "fsdp_auto_wrap_policy": args.fsdp_auto_wrap_policy,
-        "fsdp_transformer_layer_classes": args.fsdp_transformer_layer_classes,
         "losses": losses,
         "metrics": metrics,
         "total_time_s": total_time,
