@@ -8,6 +8,7 @@ import torch
 import torch.distributed as dist
 from peft import LoraConfig, get_peft_model, get_peft_model_state_dict
 from torch.distributed.fsdp import (
+    BackwardPrefetch,
     FullyShardedDataParallel as FSDP,
     FullStateDictConfig,
     MixedPrecision,
@@ -34,6 +35,12 @@ SHARDING_STRATEGIES = {
     "shard_grad_op": ShardingStrategy.SHARD_GRAD_OP,
     "no_shard": ShardingStrategy.NO_SHARD,
     "hybrid_shard": ShardingStrategy.HYBRID_SHARD,
+}
+
+BACKWARD_PREFETCH = {
+    "pre": BackwardPrefetch.BACKWARD_PRE,
+    "post": BackwardPrefetch.BACKWARD_POST,
+    "none": None,
 }
 
 
@@ -164,6 +171,10 @@ def parse_args():
     parser.add_argument("--fsdp-sharding-strategy", choices=sorted(SHARDING_STRATEGIES), default="full_shard")
     parser.add_argument("--fsdp-auto-wrap-policy", choices=["transformer", "size", "none"], default="transformer")
     parser.add_argument("--fsdp-min-num-params", type=int, default=100_000_000)
+    parser.add_argument("--fsdp-backward-prefetch", choices=sorted(BACKWARD_PREFETCH), default="pre")
+    parser.add_argument("--fsdp-limit-all-gathers", dest="fsdp_limit_all_gathers", action="store_true")
+    parser.add_argument("--no-fsdp-limit-all-gathers", dest="fsdp_limit_all_gathers", action="store_false")
+    parser.set_defaults(fsdp_limit_all_gathers=True)
     return parser.parse_args()
 
 
@@ -183,6 +194,9 @@ def main():
     if torch.cuda.is_available():
         print("device count:", torch.cuda.device_count())
         print("using device:", device, torch.cuda.get_device_name(local_rank))
+    if is_main:
+        print("fsdp_backward_prefetch:", args.fsdp_backward_prefetch)
+        print("fsdp_limit_all_gathers:", args.fsdp_limit_all_gathers)
 
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_path,
@@ -252,9 +266,10 @@ def main():
         auto_wrap_policy=auto_wrap_policy,
         mixed_precision=mixed_precision,
         sharding_strategy=SHARDING_STRATEGIES[args.fsdp_sharding_strategy],
+        backward_prefetch=BACKWARD_PREFETCH[args.fsdp_backward_prefetch],
         device_id=device if torch.cuda.is_available() else None,
         use_orig_params=True,
-        limit_all_gathers=True,
+        limit_all_gathers=args.fsdp_limit_all_gathers,
     )
     model.train()
 
@@ -388,6 +403,8 @@ def main():
         "gradient_checkpointing": not args.no_gradient_checkpointing,
         "fsdp_sharding_strategy": args.fsdp_sharding_strategy,
         "fsdp_auto_wrap_policy": args.fsdp_auto_wrap_policy,
+        "fsdp_backward_prefetch": args.fsdp_backward_prefetch,
+        "fsdp_limit_all_gathers": args.fsdp_limit_all_gathers,
         "losses": losses,
         "metrics": metrics,
         "total_time_s": total_time,
